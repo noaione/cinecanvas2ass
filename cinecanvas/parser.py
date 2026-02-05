@@ -231,6 +231,7 @@ class ContentWithFont:
 class ContentWithRuby:
     base: str
     ruby: str
+    size: float = field(default=0.5, kw_only=True)
     position: RubyPosition = field(default=RubyPosition.Top, kw_only=True)
     offset: float = field(default=0.0, kw_only=True)
     spacing: float = field(default=0.0, kw_only=True)
@@ -256,7 +257,7 @@ class ContentRotate:
 Content: TypeAlias = str
 
 
-ContentType: TypeAlias = Union[Content, ContentWithFont, ContentSpacing, ContentHGroup, ContentRotate]
+ContentType: TypeAlias = Union[Content, ContentWithFont, ContentWithRuby, ContentSpacing, ContentHGroup, ContentRotate]
 
 
 @dataclass
@@ -313,6 +314,15 @@ class _ParserState:
     inline_font_buffers: list[list[str]] = field(default_factory=list)
     current_simple_tag: str | None = None
     simple_buffer: list[str] = field(default_factory=list)
+    # Ruby parsing state
+    current_ruby_attrs: dict | None = None
+    ruby_base_buffer: list[str] | None = None
+    ruby_text_buffer: list[str] | None = None
+    # Space/HGroup/Rotate parsing state
+    current_space_size: float | None = None
+    hgroup_buffer: list[str] | None = None
+    rotate_buffer: list[str] | None = None
+    rotate_direction: Literal["left", "right"] | None = None
 
 
 _SIMPLE_TEXT_TAGS = {"SubtitleID", "MovieTitle", "ReelNumber", "Language"}
@@ -446,6 +456,17 @@ def _parse_direction(value: str | None) -> TextDirection:
     return TextDirection.Horizontal
 
 
+def _parse_ruby_position(value: str | None) -> RubyPosition:
+    if value is None:
+        return RubyPosition.Top
+    normalized = value.strip().lower()
+    if normalized == RubyPosition.Top.value:
+        return RubyPosition.Top
+    if normalized == RubyPosition.Bottom.value:
+        return RubyPosition.Bottom
+    return RubyPosition.Top
+
+
 def _flush_plain_text(state: _ParserState) -> None:
     if state.current_text_contents is None:
         state.plain_buffer.clear()
@@ -529,6 +550,74 @@ def parse_cinecanvas_xml(xml_content: str) -> DCSubtitle:
             state.plain_buffer.clear()
             return
 
+        if name == "Ruby":
+            # Ruby is only valid inside Text element
+            if state.current_text_contents is None:
+                return
+            _flush_plain_text(state)
+            state.current_ruby_attrs = {}
+            state.ruby_base_buffer = []
+            state.ruby_text_buffer = None
+            return
+
+        if name == "Rb":
+            # Rb is only valid inside Ruby element
+            if state.ruby_base_buffer is None:
+                return
+            state.ruby_base_buffer.clear()
+            return
+
+        if name == "Rt":
+            # Rt is only valid inside Ruby element
+            if state.current_ruby_attrs is None:
+                return
+            state.ruby_text_buffer = []
+            # Parse Rt attributes
+            lowered = {key.lower(): value for key, value in attrs.items()}
+            size = float(lowered.get("size", "0.5").rstrip("em"))
+            position = _parse_ruby_position(lowered.get("position"))
+            offset = float(lowered.get("offset", "0").rstrip("em"))
+            spacing = float(lowered.get("spacing", "0").rstrip("em"))
+            aspect_adjust = float(lowered.get("aspectadjust", "1.0"))
+            state.current_ruby_attrs["size"] = size
+            state.current_ruby_attrs["position"] = position
+            state.current_ruby_attrs["offset"] = offset
+            state.current_ruby_attrs["spacing"] = spacing
+            state.current_ruby_attrs["aspect_adjust"] = aspect_adjust
+            return
+
+        if name == "Space":
+            # Space is only valid inside Text element
+            if state.current_text_contents is None:
+                return
+            _flush_plain_text(state)
+            lowered = {key.lower(): value for key, value in attrs.items()}
+            size = float(lowered.get("size", "0.5").rstrip("em"))
+            state.current_text_contents.append(ContentSpacing(size=size))
+            return
+
+        if name == "HGroup":
+            # HGroup is only valid inside Text element
+            if state.current_text_contents is None:
+                return
+            _flush_plain_text(state)
+            state.hgroup_buffer = []
+            return
+
+        if name == "Rotate":
+            # Rotate is only valid inside Text element
+            if state.current_text_contents is None:
+                return
+            _flush_plain_text(state)
+            state.rotate_buffer = []
+            lowered = {key.lower(): value for key, value in attrs.items()}
+            direction = lowered.get("direction", "none").strip().lower()
+            if direction in {"left", "right"}:
+                state.rotate_direction = direction  # type: ignore
+            else:
+                state.rotate_direction = None
+            return
+
     def handle_end(name: str) -> None:
         if name in _SIMPLE_TEXT_TAGS and state.current_simple_tag == name:
             value = "".join(state.simple_buffer).strip()
@@ -552,6 +641,56 @@ def parse_cinecanvas_xml(xml_content: str) -> DCSubtitle:
                 state.current_text_contents.append(ContentWithFont(content=content_text, font=override))
             elif state.current_font_stack:
                 state.current_font_stack.pop()
+            return
+
+        if name == "Rb":
+            # Rb end - just keep the buffer
+            return
+
+        if name == "Rt":
+            # Rt end - just keep the buffer
+            return
+
+        if name == "Ruby":
+            # Ruby end - create ContentWithRuby from accumulated data
+            if state.current_text_contents is None or state.current_ruby_attrs is None:
+                return
+            if state.ruby_base_buffer is None or state.ruby_text_buffer is None:
+                return
+            base_text = "".join(state.ruby_base_buffer)
+            ruby_text = "".join(state.ruby_text_buffer)
+            ruby_content = ContentWithRuby(
+                base=base_text,
+                ruby=ruby_text,
+                size=state.current_ruby_attrs.get("size", 0.5),
+                position=state.current_ruby_attrs.get("position", RubyPosition.Top),
+                offset=state.current_ruby_attrs.get("offset", 0.0),
+                spacing=state.current_ruby_attrs.get("spacing", 0.0),
+                aspect_adjust=state.current_ruby_attrs.get("aspect_adjust", 1.0),
+            )
+            state.current_text_contents.append(ruby_content)
+            state.current_ruby_attrs = None
+            state.ruby_base_buffer = None
+            state.ruby_text_buffer = None
+            return
+
+        if name == "HGroup":
+            # HGroup end - create ContentHGroup from accumulated data
+            if state.current_text_contents is None or state.hgroup_buffer is None:
+                return
+            text = "".join(state.hgroup_buffer)
+            state.current_text_contents.append(ContentHGroup(text=text))
+            state.hgroup_buffer = None
+            return
+
+        if name == "Rotate":
+            # Rotate end - create ContentRotate from accumulated data
+            if state.current_text_contents is None or state.rotate_buffer is None:
+                return
+            text = "".join(state.rotate_buffer)
+            state.current_text_contents.append(ContentRotate(text=text, direction=state.rotate_direction))
+            state.rotate_buffer = None
+            state.rotate_direction = None
             return
 
         if name == "Text":
@@ -585,6 +724,22 @@ def parse_cinecanvas_xml(xml_content: str) -> DCSubtitle:
             return
         if state.current_text_contents is None:
             return
+        # Ruby element character routing
+        if state.ruby_text_buffer is not None:
+            state.ruby_text_buffer.append(data)
+            return
+        if state.ruby_base_buffer is not None:
+            state.ruby_base_buffer.append(data)
+            return
+        # HGroup element character routing
+        if state.hgroup_buffer is not None:
+            state.hgroup_buffer.append(data)
+            return
+        # Rotate element character routing
+        if state.rotate_buffer is not None:
+            state.rotate_buffer.append(data)
+            return
+        # Normal text routing (includes inline Font elements)
         if state.inline_font_stack:
             state.inline_font_buffers[-1].append(data)
         else:
