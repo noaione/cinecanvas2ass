@@ -1,11 +1,97 @@
 [project]
 name = "cinecanvas2ass"
 version = "0.1.0"
-description = "Add your description here"
+description = "A simple converter for CineCanvas XML subtitle to Advanced SubStation Alpha (ASS)"
 readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [ { name = "noaione", email = "noaione@n4o.xyz" } ]
 requires-python = ">=3.10"
 dependencies = [
     "ass==1.0.3",
     "ass-tag-analyzer==0.0.5",
     "fonttools==4.61.1",
 ]
+
+[project.scripts]
+cinecanvas2ass = "cinecanvas.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+packages = ["cinecanvas"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = [
+    "env",
+    "venv",
+    ".pytest_cache",
+    ".venv",
+    "__pycache__",
+    ".git",
+    ".mypy_cache",
+    ".vscode",
+    ".ruff_cache",
+    "**/Lib/**",
+    "dist",
+    "build",
+    "_templates",
+    "tools",
+]
+target-version = "py310"
+src = ["cinecanvas"]
+
+[tool.ruff.format]
+preview = true
+indent-style = "space"
+quote-style = "double"
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "N",
+    "S",
+    "B",
+    "T",
+    "Q",
+    "D",
+    "RUF",
+    "COM",
+    "PTH",
+    "ASYNC"
+]
+ignore = [
+    "E203",
+    "F405",
+    "F403",
+    "F722",
+    "N806",
+    "COM812",
+    "D400",  # first line should be period, most of my docstring will be LICENSE header so no thanks
+    "D202",
+    "D401",
+    "CPY",
+]
+preview = true
+extend-ignore = ["D", "S603", "S404", "T201"] # D -> Docstring missing for public function or method
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+ignore-decorators = ["typing.overload"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = false
+split-on-trailing-comma = true
+required-imports = ["from __future__ import annotations"]
+known-first-party = ["tests", "cinecanvas"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403", "I002", "D205"]
+"tests/*.py" = ["S101", "I002", "D"]  # assert statement used in pytest
+"pipelines/*" = ["T", "I", "S603", "D"]
+"tools/*.py" = ["D100", "T201", "I002"]

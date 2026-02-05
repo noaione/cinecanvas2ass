@@ -1,3 +1,9 @@
+"""
+SPDX-License-Identifier: Apache-2.0
+"""
+
+from __future__ import annotations
+
 from os import PathLike
 from pathlib import Path
 
@@ -55,6 +61,8 @@ from cinecanvas.parser import (
     TextWeight,
     parse_cinecanvas_file,
 )
+
+__all__ = ("ASSConverter",)
 
 
 def get_alignment(text: Text) -> AssValidTagAlignment:
@@ -491,7 +499,7 @@ class ASSConverter:
                                 style=ruby_style_name or prefer_style_name,
                                 text=ass_item_to_text(wrapped_tags),
                                 layer=idx + 100,
-                                effect="Ruby"
+                                effect="Ruby",
                             )
                         )
 
@@ -509,10 +517,3 @@ class ASSConverter:
         output_file = Path(output_file)
         with output_file.open("w", encoding="utf-8-sig") as fp:
             self._doc.dump_file(fp)
-
-
-# if __name__ == "__main__":
-#     print("Running")
-#     open_file = Path("signs_swe.xml")
-#     processor = ASSConverter(open_file, width=1998, height=1080)
-#     processor.save("signs_swe.ass")

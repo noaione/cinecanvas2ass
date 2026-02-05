@@ -1,5 +1,8 @@
 {
     "python.analysis.ignore": [
         ".venv/**/*"
-    ]
+    ],
+    "[python]": {
+        "editor.formatOnSave": true
+    }
 }
