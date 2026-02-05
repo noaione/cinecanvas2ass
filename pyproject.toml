@@ -1,0 +1,11 @@
+[project]
+name = "cinecanvas2ass"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ass==1.0.3",
+    "ass-tag-analyzer==0.0.5",
+    "fonttools==4.61.1",
+]
