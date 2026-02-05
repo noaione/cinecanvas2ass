@@ -237,6 +237,14 @@ class ContentWithRuby:
     spacing: float = field(default=0.0, kw_only=True)
     aspect_adjust: float = field(default=1.0, kw_only=True)
 
+    def __post_init__(self):
+        if self.offset < -1.0:
+            raise ValueError(f"Offset must not be less than -1.0em, got {self.offset}")
+        if self.spacing < -1.0:
+            raise ValueError(f"Spacing must not be less than -1.0em, got {self.spacing}")
+        if self.aspect_adjust < 0.25 or self.aspect_adjust > 4.0:
+            raise ValueError(f"Aspect adjust must be between 0.25-4.0, got {self.aspect_adjust} instead")
+
 
 @dataclass
 class ContentSpacing:

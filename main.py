@@ -1,4 +1,3 @@
-import warnings
 from os import PathLike
 from pathlib import Path
 
@@ -18,7 +17,10 @@ from ass_tag_analyzer.ass_item.ass_valid_tag.ass_valid_tag_color import (
     AssValidTagPrimaryColor,
 )
 from ass_tag_analyzer.ass_item.ass_valid_tag.ass_valid_tag_fade import AssValidTagFade
-from ass_tag_analyzer.ass_item.ass_valid_tag.ass_valid_tag_font_scale import AssValidTagFontXScale
+from ass_tag_analyzer.ass_item.ass_valid_tag.ass_valid_tag_font_scale import (
+    AssValidTagFontXScale,
+    AssValidTagFontYScale,
+)
 from ass_tag_analyzer.ass_item.ass_valid_tag.ass_valid_tag_general import (
     AssValidTagBold,
     AssValidTagFontName,
@@ -44,6 +46,7 @@ from cinecanvas.parser import (
     ContentWithRuby,
     Font,
     FontOverride,
+    RubyPosition,
     Text,
     TextAlignH,
     TextAlignV,
@@ -97,7 +100,7 @@ def color_to_ass_color(color: Color, effect: TextEffect = TextEffect.No) -> list
             return [AssValidTagPrimaryColor(True, color.r, color.g, color.b), AssValidTagPrimaryAlpha(255 - color.a)]
 
 
-def calculate_effect_size(font_size: int, width: int, height: int) -> float:
+def calculate_effect_size(font_size: float, width: int, height: int) -> float:
     base_width = 1920
     base_height = 1080
     scale = min(width / base_width, height / base_height)
@@ -154,7 +157,98 @@ def calculate_positioning(
     return round(pos_x, 2), round(pos_y, 2)
 
 
+def calculate_ruby_ass_offset(
+    base_w: float,
+    base_h: float,
+    ruby_scale: float,
+    num_ruby_chars: int,
+    alignment: int = 2,  # Standard ASS Numpad Alignment (1-9)
+    direction: TextDirection = TextDirection.Horizontal,
+    ruby_pos: RubyPosition = RubyPosition.Top,
+    buffer: float = 4.0,
+    is_cjk_ruby: bool = False,
+) -> tuple[float, float]:
+    """Created by Gemini without too much modifications, looks shit so I'll probably rework this later"""
+
+    # --- 1. Calculate Ruby Dimensions ---
+    # In vertical mode, "Width" is the thickness, "Height" is the length
+    if direction == TextDirection.Horizontal:
+        ruby_h = base_h * ruby_scale
+        aspect = 1.0 if is_cjk_ruby else 0.6
+        ruby_w = (ruby_h * aspect) * num_ruby_chars
+    else:
+        # Vertical: "Height" of font becomes width of the column
+        ruby_w = base_w * ruby_scale
+        aspect = 1.0 if is_cjk_ruby else 0.6
+        ruby_h = (ruby_w * aspect) * num_ruby_chars
+
+    # --- 2. Determine Anchor Multipliers ---
+    # Convert Numpad Alignment (1-9) to X/Y multipliers (0.0 to 1.0)
+    # 7 8 9  (Top)    -> Y=0.0
+    # 4 5 6  (Center) -> Y=0.5
+    # 1 2 3  (Bottom) -> Y=1.0
+
+    align_map = {
+        1: (0.0, 1.0),
+        2: (0.5, 1.0),
+        3: (1.0, 1.0),
+        4: (0.0, 0.5),
+        5: (0.5, 0.5),
+        6: (1.0, 0.5),
+        7: (0.0, 0.0),
+        8: (0.5, 0.0),
+        9: (1.0, 0.0),
+    }
+
+    # Default to Bottom-Center (2) if invalid
+    anchor_x_mult, anchor_y_mult = align_map.get(alignment, (0.5, 1.0))
+
+    # --- 3. Calculate "Center-to-Center" Distance ---
+    # We first align the centers of Base and Ruby, then shift.
+
+    # Distance from Base Anchor to Base Center
+    # If Anchor is Bottom-Left (0,1), Center is (W/2, -H/2) relative to it.
+    base_center_x = base_w * (0.5 - anchor_x_mult)
+    base_center_y = base_h * (0.5 - anchor_y_mult)
+
+    # Current Ruby Center is now at (base_center_x, base_center_y)
+    # We now apply the "Push" to move Ruby outside the Base box.
+
+    push_x = 0.0
+    push_y = 0.0
+
+    if direction == TextDirection.Horizontal:
+        # Push Up or Down
+        # Total distance needed from center: (Base_H / 2) + Buffer + (Ruby_H / 2)
+        dist = (base_h / 2) + buffer + (ruby_h / 2)
+
+        if ruby_pos == RubyPosition.Top:  # Top
+            push_y = -dist
+        else:  # Bottom
+            push_y = dist
+
+    else:  # VERTICAL
+        # Push Left or Right
+        # Total distance needed from center: (Base_W / 2) + Buffer + (Ruby_W / 2)
+        dist = (base_w / 2) + buffer + (ruby_w / 2)
+
+        if ruby_pos == RubyPosition.Top:  # Right (Standard for Japanese Vert)
+            push_x = dist
+        else:  # Left
+            push_x = -dist
+
+    # --- 4. Final Coordinates ---
+    # The Ruby's anchor point will likely match the Base's alignment.
+    # So we are calculating the position of the Ruby's Anchor.
+
+    final_x = base_center_x + push_x
+    final_y = base_center_y + push_y
+
+    return final_x, final_y
+
+
 def make_directional_text(content: str, direction: TextDirection) -> AssText:
+    content = content.replace("\n", "\\N")
     if direction == TextDirection.Vertical:
         # Split each characters and add \N for new line
         strings: list[str] = list(content)
@@ -179,6 +273,8 @@ class ASSConverter:
         self._doc.play_res_y = height
         self._doc.info.title = self._subtitle.title
 
+        self._process_ruby = False
+
     def _init_styles(self):
         styles: list[Style] = []
 
@@ -192,6 +288,49 @@ class ASSConverter:
             styles.append(new_style)
         self._doc.styles = styles
 
+    @property
+    def process_ruby(self) -> bool:
+        """Process ruby text (Experimental)"""
+        return self._process_ruby
+
+    @process_ruby.setter
+    def process_ruby(self, data: bool) -> None:
+        if isinstance(data, bool):
+            self._process_ruby = data
+
+    def generate_tags_from_font(
+        self, final_font: Font, root_font: Font | None = None, *, override_font_size: float | None = None
+    ) -> tuple[list[AssTag], str]:
+        color_text = color_to_ass_color(final_font.color)
+        text_size = AssValidTagFontSize(override_font_size or float(final_font.size))
+
+        merged_tags = [*color_text, text_size]
+        final_font_name = None
+        if root_font is not None:
+            final_font_name = root_font.font
+        if root_font is not None and root_font.font != final_font.font:
+            merged_tags.append(AssValidTagFontName(final_font.font))
+            final_font_name = final_font.font
+        if not final_font_name:
+            final_font_name = final_font.font
+        match final_font.weight:
+            case TextWeight.Normal:
+                merged_tags.append(AssValidTagBold(0))
+            case TextWeight.Bold:
+                merged_tags.append(AssValidTagBold(1))
+        merged_tags.append(AssValidTagItalic(final_font.italic))
+        merged_tags.append(AssValidTagUnderline(final_font.underlined))
+        if final_font.effect != TextEffect.No:
+            effect_text = color_to_ass_color(final_font.effect_color, final_font.effect)
+            merged_tags.extend(effect_text)
+            eff_amount = calculate_effect_size(override_font_size or final_font.size, self._w, self._h)
+            match final_font.effect:
+                case TextEffect.Shadow:
+                    merged_tags.append(AssValidTagShadow(eff_amount))
+                case TextEffect.Border:
+                    merged_tags.append(AssValidTagBorder(eff_amount))
+        return merged_tags, final_font_name
+
     def format_text(
         self,
         content: ContentType,
@@ -204,38 +343,12 @@ class ASSConverter:
     ) -> tuple[list[AssTag], AssText, str]:
         if isinstance(content, Content):
             final_font = maybe_merge_font(base_font, root_font)
-            color_text = color_to_ass_color(final_font.color)
-            text_size = AssValidTagFontSize(float(final_font.size))
-
-            merged_tags = [*color_text, text_size]
-            final_font_name = None
-            if root_font is not None:
-                final_font_name = root_font.font
-            if root_font is not None and root_font.font != final_font.font:
-                merged_tags.append(AssValidTagFontName(final_font.font))
-                final_font_name = final_font.font
-            if not final_font_name:
-                final_font_name = final_font.font
-            match final_font.weight:
-                case TextWeight.Normal:
-                    merged_tags.append(AssValidTagBold(0))
-                case TextWeight.Bold:
-                    merged_tags.append(AssValidTagBold(1))
-            merged_tags.append(AssValidTagItalic(final_font.italic))
-            merged_tags.append(AssValidTagUnderline(final_font.underlined))
+            merged_tags, final_font_name = self.generate_tags_from_font(final_font, root_font)
             if final_font.spacing != 0.0:
                 merged_tags.append(AssValidTagLetterSpacing(final_font.spacing))
             if final_font.aspect_adjust != 0.0:
-                merged_tags.append(AssValidTagFontXScale(final_font.aspect_adjust * 100))  # fscx at 100 for "normal"
-            if final_font.effect != TextEffect.No:
-                effect_text = color_to_ass_color(final_font.effect_color, final_font.effect)
-                merged_tags.extend(effect_text)
-                eff_amount = calculate_effect_size(final_font.size, self._w, self._h)
-                match final_font.effect:
-                    case TextEffect.Shadow:
-                        merged_tags.append(AssValidTagShadow(eff_amount))
-                    case TextEffect.Border:
-                        merged_tags.append(AssValidTagBorder(eff_amount))
+                scaler = AssValidTagFontXScale if text.direction == TextDirection.Horizontal else AssValidTagFontYScale
+                merged_tags.append(scaler(final_font.aspect_adjust * 100))  # fsc{x,y} at 100 for "normal"
             if isinstance(additional_tags, list):
                 merged_tags.extend(additional_tags)
             return merged_tags, make_directional_text(content, force_direction or text.direction), final_font_name
@@ -243,7 +356,6 @@ class ASSConverter:
             final_font = maybe_merge_font(content.font, root_font)
             return self.format_text(content.content, text, base_font=final_font, root_font=root_font)
         elif isinstance(content, ContentWithRuby):
-            warnings.warn("Ruby text is currently unsupported properly")
             return self.format_text(content.base, text, base_font=base_font, root_font=root_font)
         elif isinstance(content, ContentSpacing):
             # Just add spacing
@@ -268,6 +380,40 @@ class ASSConverter:
             )
         else:
             raise TypeError(f"Unsupported type of {type(content)} found")
+
+    def format_ruby_text(
+        self,
+        content: ContentType,
+        text: Text,
+        *,
+        root_pos: tuple[float, float],
+        alignment: int = 2,
+        base_font: Font | FontOverride | None = None,
+        root_font: Font | None = None,
+    ) -> tuple[list[AssTag], AssText, str] | None:
+        if not isinstance(content, ContentWithRuby):
+            return None
+        final_font = maybe_merge_font(base_font, root_font)
+        font_size = final_font.size * content.size
+        merged_tags, final_font_name = self.generate_tags_from_font(final_font, root_font, override_font_size=font_size)
+        if content.spacing != 0.0:
+            merged_tags.append(AssValidTagLetterSpacing(content.spacing))
+        if content.aspect_adjust != 0.0:
+            scaler = AssValidTagFontXScale if text.direction == TextDirection.Horizontal else AssValidTagFontYScale
+            merged_tags.append(scaler(content.aspect_adjust * 100))  # fsc{x,y} at 100 for "normal"
+        offseting = final_font.size / 100.0 * (content.offset * final_font.size)
+        shift_x, shift_y = calculate_ruby_ass_offset(
+            base_w=self._w / final_font.size * 0.8,
+            base_h=self._h / final_font.size * 1.6,
+            ruby_scale=content.size,
+            num_ruby_chars=len(content.ruby),
+            alignment=alignment,
+            direction=text.direction,
+            buffer=offseting,
+        )
+        root_x, root_y = root_pos
+        merged_tags.append(AssValidTagPosition(root_x + shift_x, root_y + shift_y))
+        return merged_tags, make_directional_text(content.ruby, text.direction), final_font_name
 
     def convert(self) -> Document:
         if self._is_done:
@@ -294,16 +440,18 @@ class ASSConverter:
                     sub.align_v,
                 )
 
+                alignment = get_alignment(sub)
                 final_tags = [
                     AssTagListOpening(),
                     *base_ass_tags,
-                    get_alignment(sub),
+                    alignment,
                     AssValidTagPosition(pos_x, pos_y),
                     AssTagListEnding(),
                 ]
                 base_font = root_font if root_font is not None else sub.font
 
                 prefer_style_name = None
+                ruby_text_queues = []
                 for text in sub.contents:
                     part_tags, text_itself, style_name = self.format_text(
                         text,
@@ -318,10 +466,40 @@ class ASSConverter:
                     if prefer_style_name is None:
                         prefer_style_name = style_name
 
+                    ruby_text_info = self.format_ruby_text(
+                        text,
+                        sub,
+                        root_pos=(pos_x, pos_y),
+                        alignment=alignment.alignment.value,
+                        base_font=base_font,
+                        root_font=root_font if root_font is not None else base_font,  # type: ignore
+                    )
+                    if ruby_text_info is not None and self._process_ruby:
+                        ruby_tags, ruby_itself, ruby_style_name = ruby_text_info
+
+                        wrapped_tags = [
+                            AssTagListOpening(),
+                            alignment,
+                            *ruby_tags,
+                            AssTagListEnding(),
+                            ruby_itself,
+                        ]
+                        ruby_text_queues.append(
+                            Dialogue(
+                                start=start_ms,
+                                end=end_ms,
+                                style=ruby_style_name or prefer_style_name,
+                                text=ass_item_to_text(wrapped_tags),
+                                layer=idx + 100,
+                                effect="Ruby"
+                            )
+                        )
+
                 into_line = ass_item_to_text(final_tags)
                 self._doc.events.append(
                     Dialogue(start=start_ms, end=end_ms, style=prefer_style_name, text=into_line, layer=idx)
                 )
+                self._doc.events.extend(ruby_text_queues)
         self._is_done = True
         return self._doc
 
