@@ -546,8 +546,8 @@ def parse_cinecanvas_xml(xml_content: str) -> DCSubtitle:
             return
 
         if name == "Text":
-            align_h = _parse_align_h(attrs.get("HAlign") or attrs.get("halign"))
-            align_v = _parse_align_v(attrs.get("VAlign") or attrs.get("valign"))
+            align_h = _parse_align_h(attrs.get("HAlign") or attrs.get("halign")) or TextAlignH.Center
+            align_v = _parse_align_v(attrs.get("VAlign") or attrs.get("valign")) or TextAlignV.Center
             text_direction = _parse_direction(attrs.get("Direction") or attrs.get("direction"))
             position_h = attrs.get("HPosition") or attrs.get("hposition")
             position_v = attrs.get("VPosition") or attrs.get("vposition")
